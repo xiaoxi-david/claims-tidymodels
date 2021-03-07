@@ -1,0 +1,268 @@
+---
+title: "French Motor Claims GLM model"
+author: "Xiaoxi"
+date: "06/03/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Claim frequency model - GLM model
+
+### Load libraries
+
+```{r}
+library(tidymodels)
+library(poissonreg)
+library(vroom)
+```
+
+### Load dataset
+
+```{r}
+dataset <- vroom('freMTPL2freq.csv')
+```
+
+```{r}
+dataset <- dataset %>% 
+  mutate(ClaimNb = pmin(ClaimNb, 4),   # correct for unreasonable observations
+         Exposure = pmin(Exposure, 1)) # correct for unreasonable observations
+```
+
+### GLM model
+
+```{r}
+VehAge_dict <- cbind(c(0:110), c(1, rep(2, 10), rep(3, 100)))
+
+DrivAge_dict <- cbind(c(18:100), c(rep(1,21-18), rep(2, 26-21), rep(3, 31-26), rep(4, 41-31), rep(5,51-41), rep(6,71-51), rep(7, 101-71)))
+
+dataset_GLM <- 
+  dataset %>% 
+  mutate(Area = as.integer(factor(Area)),
+         VehPower = as.factor(pmin(VehPower, 9)),
+         VehAge = relevel(factor(VehAge_dict[VehAge+1, 2]), ref = '2'),
+         DrivAge = relevel(factor(DrivAge_dict[DrivAge-17,2]), ref = '5'),
+         BonusMalus = as.integer(pmin(BonusMalus, 150)),
+         VehBrand = as.factor(VehBrand),
+         Density = as.numeric(log(Density)),
+         Region = relevel(factor(Region), ref='R24')
+         )
+```
+
+```{r}
+set.seed(100)
+dataset_split <- initial_split(dataset_GLM, prop = 0.90)
+train_GLM <- training(dataset_split)
+test_GLM  <- testing(dataset_split)
+```
+
+#### Train
+
+```{r}
+train_GLM %>% 
+  group_by(ClaimNb) %>% 
+  summarise(n = n()) %>% 
+  mutate(freq = round(100*n/sum(n), 3))
+```
+
+```{r}
+train_GLM %>% 
+  summarise(freq = 100 * sum(ClaimNb) / sum(Exposure))
+```
+
+#### Test
+
+```{r}
+test_GLM %>% 
+  group_by(ClaimNb) %>% 
+  summarise(n = n()) %>% 
+  mutate(freq = round(100*n/sum(n), 3))
+```
+
+```{r}
+test_GLM %>% 
+  summarise(freq = 100 * sum(ClaimNb) / sum(Exposure))
+```
+
+### GLM library
+
+```{r}
+glm <- glm(ClaimNb ~ VehPower + VehAge + DrivAge + BonusMalus + VehBrand + VehGas + 
+              Density + Region + Area, offset = log(Exposure), data=train_GLM, family=poisson())
+```
+
+```{r}
+summary(glm)
+```
+
+```{r}
+anova(glm)
+```
+
+```{r}
+tidy(glm)
+```
+
+```{r}
+glance(glm)
+```
+
+#### Train
+
+```{r}
+train_res <- bind_cols(.pred = fitted(glm), 
+                       train_rec %>% select(ClaimNb))
+train_res
+```
+
+```{r}
+yhat <- select(train_res, .pred)
+y <- select(train_res, ClaimNb)
+
+in_sample <- 2*(sum(yhat) - sum(y) + sum(log((y/yhat)^y)))
+in_sample
+```
+
+```{r}
+n <- nrow(train_GLM)
+
+average_in_sample <- in_sample / n
+100*average_in_sample
+```
+
+#### Test
+
+```{r}
+test_res <- bind_cols(.pred = predict(glm, newdata = test_GLM, type = "response"), 
+                       test_rec %>% select(ClaimNb))
+test_res
+```
+
+```{r}
+yhat <- select(test_res, .pred)
+y <- select(test_res, ClaimNb)
+
+out_of_sample <- 2*(sum(yhat) - sum(y) + sum(log((y/yhat)^y)))
+out_of_sample
+```
+
+```{r}
+n <- nrow(test_GLM)
+
+average_out_of_sample <- out_of_sample / n
+100*average_out_of_sample
+```
+
+### Tidymodels
+
+```{r}
+dataset_rec <- 
+  dataset %>% 
+  mutate(VehPower = pmin(VehPower, 9),
+         BonusMalus = pmin(BonusMalus, 150))
+```
+
+```{r}
+set.seed(100)
+dataset_split <- initial_split(dataset_rec, prop = 0.90)
+train_rec <- training(dataset_split)
+test_rec  <- testing(dataset_split)
+```
+
+```{r}
+rec <-  
+  recipe(ClaimNb ~ VehPower + VehAge + DrivAge + BonusMalus + VehBrand +
+           VehGas + Density + Region + Area, data = train_rec) %>%
+  step_integer(Area) %>%
+  step_num2factor(VehPower,
+                  transform = function(x) x-3,
+                  levels = c('4','5','6','7','8','9')) %>%
+  step_cut(VehAge, breaks = c(1,10)) %>%
+  step_relevel(VehAge, ref_level = '(1,10]') %>%
+  step_cut(DrivAge, breaks = c(21,26,31,41,51,71)) %>%
+  step_relevel(DrivAge, ref_level = '(41,51]') %>%
+  step_string2factor(VehBrand, VehGas, Region) %>%
+  step_relevel(Region, ref_level = 'R24') %>%
+  step_log(Density, base = 10) %>% 
+  step_dummy(all_nominal()) 
+
+summary(rec, original = TRUE)
+```
+
+```{r}
+train_baked <- rec %>% 
+  prep(training = train_rec, strings_as_factors = FALSE) %>% 
+  bake(new_data = NULL)
+```
+
+```{r}
+test_baked <- rec %>% 
+  prep(training = train_rec, strings_as_factors = FALSE) %>%
+  bake(new_data = test_rec)
+```
+
+```{r}
+log_lin_mod <- 
+  poisson_reg() %>% 
+  set_engine('glm')
+```
+
+```{r}
+fit_workflow <- 
+  workflow() %>% 
+  add_model(log_lin_mod) %>% 
+  add_recipe(rec) %>% 
+  fit(train_rec)
+```
+
+```{r}
+tidy(fit_workflow)
+```
+
+#### Train
+
+```{r}
+train_res <- bind_cols(fit_workflow %>% predict(train_rec), 
+                       train_rec %>% select(ClaimNb))
+train_res
+```
+
+```{r}
+yhat <- select(train_res, .pred)
+y <- select(train_res, ClaimNb)
+
+in_sample <- 2*(sum(yhat) - sum(y) + sum(log((y/yhat)^y)))
+in_sample
+```
+
+```{r}
+n <- nrow(train_rec)
+
+average_in_sample <- in_sample / n
+100 * average_in_sample
+```
+
+#### Test
+
+```{r}
+test_res <- bind_cols(fit_workflow %>% predict(test_rec), 
+                       test_rec %>% select(ClaimNb))
+test_res
+```
+
+```{r}
+yhat <- select(test_res, .pred)
+y <- select(test_res, ClaimNb)
+
+out_of_sample <- 2*(sum(yhat) - sum(y) + sum(log((y/yhat)^y)))
+out_of_sample
+```
+
+```{r}
+n <- nrow(test_rec)
+  
+average_out_of_sample <- out_of_sample / n
+100 * average_out_of_sample
+```

@@ -1,0 +1,229 @@
+---
+title: "French Motor Claims EDA"
+author: "Xiaoxi"
+date: "03/03/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## French motor claims EDA
+
+### Load libraries
+
+```{r}
+library(tidyverse)
+library(vroom)
+```
+
+### Load dataset
+
+```{r}
+dataset <- vroom('freMTPL2freq.csv')
+```
+
+```{r}
+str(dataset)
+```
+
+```{r}
+dataset %>% 
+  head()
+```
+
+### EDA
+
+#### Exposure
+
+```{r}
+dataset %>%
+  ggplot(aes(x = Exposure)) +
+  geom_histogram(binwidth=0.1) +
+  labs(title = 'histogram of the exposures',
+       x = 'exposures',
+       y = 'number of policies')
+```
+
+```{r}
+dataset %>% 
+  ggplot(aes(y=Exposure)) +
+  geom_boxplot() +
+  labs(title = 'boxplot of the exposures', y = '')
+```
+
+```{r}
+dataset %>% 
+  ggplot(aes(x = factor(ClaimNb))) +
+  geom_bar() +
+  labs(title = 'histogram of claim numbers',
+       x = 'number of claims',
+       y = 'frequency')
+```
+
+```{r}
+dataset %>%
+  group_by(ClaimNb) %>% 
+  summarise(number_policies = n(),
+            total_exposure = sum(Exposure))
+```
+
+#### Data transformation
+
+```{r}
+dataset <- 
+  dataset %>% 
+  mutate(ClaimNb = pmin(ClaimNb, 4), # correct for unreasonable observations
+         Exposure = pmin(Exposure, 1), # correct for unreasonable observations
+         VehAge = pmin(VehAge, 20),
+         DrivAge = pmin(DrivAge, 90),
+         BonusMalus = pmin(round(BonusMalus, -1), 150))
+```
+
+```{r}
+dataset %>%
+  group_by(ClaimNb) %>% 
+  summarise(number_policies = n(),
+            total_exposure = sum(Exposure))
+```
+
+```{r}
+dataset %>% 
+  summarise(freq = 100 * sum(ClaimNb) / sum(Exposure))
+```
+
+##### Auxiliar functions
+
+```{r}
+hist_expo <- function(dataset, var_group, var_text) {
+  dataset %>% 
+  ggplot(aes(x = {{var_group}}, y = Exposure)) +
+  geom_col() +
+  labs(title = paste('total volumes per', var_text),
+       x = var_text,
+       y = 'exposure')
+}
+```
+
+```{r}
+plot_freq <- function(dataset, var_group, var_text, ymax) {
+  dataset %>% 
+  group_by({{var_group}}) %>% 
+  summarise(total_exp = sum(Exposure),
+    freq_mean = sum(ClaimNb) / sum(Exposure)) %>% 
+  mutate(std = sqrt(freq_mean / total_exp),
+         freq_min = freq_mean - 2*std,
+         freq_max = freq_mean + 2*std) %>%
+  select({{var_group}}, starts_with('freq')) %>%
+  mutate(across(starts_with('freq'), ~round(.x, 4))) %>%
+  ggplot() +
+    geom_point(aes(x = {{var_group}}, y = freq_mean), shape = 19) +
+    stat_summary(aes(x = {{var_group}}, y = freq_max, group = 1), 
+                 fun = sum, geom = 'line', lty = 'dashed', col = 'blue') +
+    stat_summary(aes(x = {{var_group}}, y = freq_min, group = 1), 
+                 fun = sum, geom = 'line', lty = 'dashed', col = 'blue') +
+    labs(title = paste('observed frequency per', var_text),
+         x = var_text,
+         y = 'frequency') +
+    ylim(c(0, ymax))
+}
+```
+
+#### Area Code
+
+```{r}
+hist_expo(dataset, Area, 'area code groups')
+```
+
+```{r}
+plot_freq(dataset, Area, 'area code groups', 0.35)
+```
+
+#### Vehicle power
+
+```{r}
+hist_expo(dataset, factor(VehPower), 'vehicle power groups')
+```
+
+```{r}
+summary_freq(dataset, VehPower)
+```
+
+```{r}
+plot_freq(dataset, VehPower, 'vehicle power groups', 0.35)
+```
+
+#### Vehicle age
+
+```{r}
+hist_expo(dataset, VehAge, 'vehicle age groups')
+```
+
+```{r}
+plot_freq(dataset, VehAge, 'vehicle age groups', 0.35)
+```
+
+#### Driver's age
+
+```{r}
+hist_expo(dataset, DrivAge, 'driver age groups')
+```
+
+```{r}
+plot_freq(dataset, DrivAge, 'driver age groups', 0.35)
+```
+
+#### Bonus-malus
+
+```{r}
+hist_expo(dataset, factor(BonusMalus), 'bonus-malus level groups')
+```
+
+```{r}
+plot_freq(dataset, BonusMalus, 'bonus-malus groups', 0.7)
+```
+
+#### Car brand
+
+```{r}
+hist_expo(dataset, VehBrand, 'car brand groups')
+```
+
+```{r}
+plot_freq(dataset, VehBrand, 'car brand groups', 0.35)
+```
+
+#### Fuel type
+
+```{r}
+hist_expo(dataset, VehGas, 'fuel type')
+```
+
+```{r}
+plot_freq(dataset, VehGas, 'fuel type', 0.35)
+```
+
+#### Density
+
+```{r}
+dataset %>% 
+  mutate(Density = round(log(Density))) %>%
+  hist_expo(Density, 'density (log-scale) groups')
+```
+
+```{r}
+dataset %>%
+  mutate(Density = round(log(Density))) %>% 
+  plot_freq(Density, 'density (log-scale) groups', 0.35)
+```
+
+#### Region
+
+```{r}
+hist_expo(dataset, VehAge, 'regional groups')
+```
+
+```{r}
+plot_freq(dataset, Region, 'regional groups', 0.35)
+```

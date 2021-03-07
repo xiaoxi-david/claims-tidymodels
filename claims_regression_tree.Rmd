@@ -1,0 +1,235 @@
+---
+title: "French Motor Claims regression tree model"
+author: "Xiaoxi"
+date: "06/03/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Claim frequency model - Regression Tree
+
+### Load libraries
+
+```{r}
+library(tidymodels)
+library(vroom)
+
+library(rpart)
+library(rpart.plot)
+```
+
+### Load dataset
+
+```{r}
+dataset <- vroom('freMTPL2freq.csv')
+```
+
+```{r}
+dataset <- 
+  dataset %>% 
+  mutate(VehPower = pmin(VehPower, 9),
+         BonusMalus = pmin(BonusMalus, 150))
+```
+
+```{r}
+set.seed(100)
+dataset_split <- initial_split(dataset, prop = 0.90)
+train <- training(dataset_split)
+test  <- testing(dataset_split)
+```
+
+### Rpart model
+
+```{r}
+tree <- rpart(cbind(Exposure, ClaimNb) ~ Area + VehPower + VehAge + DrivAge + 
+                 BonusMalus + VehBrand + VehGas + Density + Region, 
+               data = train, method = "poisson", 
+               control = rpart.control(xval = 1, minbucket = 10000, cp = 0.0005))
+tree
+```
+
+```{r}
+printcp(tree)
+```
+
+```{r}
+rpart.plot(tree)
+```
+
+#### Train
+
+```{r}
+train_res <- bind_cols(.pred = predict(tree)*train$Exposure, 
+                       train %>% select(ClaimNb))
+
+train_res
+```
+
+```{r}
+yhat <- select(train_res, .pred)
+y <- train_res$ClaimNb
+
+in_sample <- 2*(sum(yhat) - sum(y) + sum(log((y/yhat)^y)))
+in_sample
+```
+
+```{r}
+n <- nrow(train)
+
+average_in_sample <- in_sample / n
+100*average_in_sample
+```
+
+#### Test
+
+```{r}
+test_res <- bind_cols(.pred = predict(tree, newdata = test)*test$Exposure, 
+                      test %>% select(ClaimNb))
+test_res
+```
+
+```{r}
+yhat <- select(test_res, .pred)
+y <- select(test_res, ClaimNb)
+
+out_of_sample <- 2*(sum(yhat) - sum(y) + sum(log((y/yhat)^y)))
+out_of_sample
+```
+
+```{r}
+n <- nrow(test)
+
+average_out_of_sample <- out_of_sample / n
+100*average_out_of_sample
+```
+
+#### Regression tree vs GLM
+
+```{r}
+n <- nrow(train)
+
+average_loss <- cbind(tree$cptable[,2], 
+                      tree$cptable[,3], 
+                      tree$cptable[,3]* tree$frame$dev[1] / n)
+average_loss
+```
+
+```{r}
+plot(x=average_loss[,1], 
+     y=average_loss[,3]*100, 
+     type='l', 
+     col="blue", 
+     ylim=c(30.5,33.5), 
+     xlab="number of splits", 
+     ylab="average in-sample loss (in 10^(-2))", 
+     main="decrease of in-sample loss")
+
+points(x=average_loss[,1], 
+       y=average_loss[,3]*100, 
+       pch=19, col="blue")
+
+abline(h=c(31.26738), 
+       col="green", 
+       lty=2)
+
+legend(x="topright", 
+       col=c("blue", "green"), 
+       lty=c(1,2), 
+       lwd=c(1,1), 
+       pch=c(19,-1), 
+       legend=c("Model RT", "Model GLM"))
+```
+
+### Tidymodels
+
+```{r}
+reg_tree_mod <- 
+  decision_tree(
+    mode = "regression",
+    cost_complexity = 0.0005,
+    min_n = 10000) %>%
+  set_engine('rpart')
+
+reg_tree_mod
+```
+
+```{r}
+reg_tree_mod <- 
+  reg_tree_mod %>% 
+  fit(cbind(Exposure, ClaimNb) ~ Area + VehPower + VehAge + DrivAge + 
+      BonusMalus + VehBrand + VehGas + Density + Region, data = train)
+
+reg_tree_mod
+```
+
+#### Train
+
+```{r}
+train_res <- bind_cols(.pred = predict(reg_tree_mod, new_data = train) * train$Exposure, 
+                       train %>% select(ClaimNb))
+
+train_res
+```
+
+```{r}
+yhat <- select(train_res, .pred)
+y <- train_res$ClaimNb
+
+in_sample <- 2*(sum(yhat) - sum(y) + sum(log((y/yhat)^y)))
+in_sample
+```
+
+```{r}
+n <- nrow(train)
+
+average_in_sample <- in_sample / n
+100*average_in_sample
+```
+
+#### Test
+
+```{r}
+test_res <- bind_cols(.pred = predict(reg_tree_mod, new_data = test) * test$Exposure, 
+                      test %>% select(ClaimNb))
+test_res
+```
+
+```{r}
+yhat <- select(test_res, .pred)
+y <- select(test_res, ClaimNb)
+
+out_of_sample <- 2*(sum(yhat) - sum(y) + sum(log((y/yhat)^y)))
+out_of_sample
+```
+
+```{r}
+n <- nrow(test)
+
+average_out_of_sample <- out_of_sample / n
+100*average_out_of_sample
+```
+
+#### Regression tree vs GLM
+
+```{r}
+n <- nrow(train)
+
+avg_loss <- bind_cols(index = reg_tree_mod$fit$cptable[,2], 
+                      dev = reg_tree_mod$fit$cptable[,3]*reg_tree_mod$fit$frame$dev[1]/n)
+avg_loss
+```
+
+```{r}
+avg_loss %>% 
+  ggplot(aes(x = index, y = 100*dev)) +
+  geom_line(col = 'blue') +
+  geom_point(col = 'blue') +
+  geom_abline(intercept = 31.26738, slope = 0, col = 'green', lty = 2) +
+  labs(title = 'decrease of in-sample loss',
+       x = 'number of splits',
+       y = 'average in-sample loss (in 10^(-2))') +
+  ylim(c(30.5, 33.5))
+```
